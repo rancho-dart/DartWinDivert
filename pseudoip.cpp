@@ -48,35 +48,41 @@ static uint32_t try_allocate_pseudoip(const std::string& domain, uint32_t real_i
     return 0;
 }
 
-// 分配伪地址
-uint32_t allocate_pseudoip(const std::string& domain, uint32_t real_ip) {
-    auto now = std::chrono::steady_clock::now();
-    std::string key = make_key(domain, real_ip);
+// 修改 allocate_pseudoip 函数中 domain 的处理方式，避免直接修改 const std::string& 参数  
+uint32_t allocate_pseudoip(const std::string& domain, uint32_t real_ip) {  
+    auto now = std::chrono::steady_clock::now();  
+    std::string mutable_domain = domain; // 创建一个可修改的副本  
+    // 如果域名不以.结尾，则添加一个点  
+    if (mutable_domain.back() != '.') {  
+        mutable_domain += '.';  
+    }  
 
-    // 已分配过，刷新分配时间并返回
-    auto it = domain_ip_map.find(key);
-    if (it != domain_ip_map.end()) {
-        uint32_t pseudoip = it->second;
-        // 检查是否过期
-        auto rec_it = pseudoip_map.find(pseudoip);
-        if (rec_it != pseudoip_map.end() && rec_it->second.expire_time > now) {
-            // 刷新分配时间
-            rec_it->second.expire_time = now + std::chrono::seconds(PSEUDOIP_TTL);
-            return pseudoip;
-        }
-        // 过期则清理
-        pseudoip_map.erase(pseudoip);
-        domain_ip_map.erase(it);
-    }
+    std::string key = make_key(mutable_domain, real_ip);  
 
-    // 第一次尝试分配
-    uint32_t result = try_allocate_pseudoip(domain, real_ip, now);
-    if (result != 0) return result;
+    // 已分配过，刷新分配时间并返回  
+    auto it = domain_ip_map.find(key);  
+    if (it != domain_ip_map.end()) {  
+        uint32_t pseudoip = it->second;  
+        // 检查是否过期  
+        auto rec_it = pseudoip_map.find(pseudoip);  
+        if (rec_it != pseudoip_map.end() && rec_it->second.expire_time > now) {  
+            // 刷新分配时间  
+            rec_it->second.expire_time = now + std::chrono::seconds(PSEUDOIP_TTL);  
+            return pseudoip;  
+        }  
+        // 过期则清理  
+        pseudoip_map.erase(pseudoip);  
+        domain_ip_map.erase(it);  
+    }  
 
-    // 池已满，清理过期数据后再尝试一次
-    cleanup_expired_pseudoip();
-    now = std::chrono::steady_clock::now();
-    return try_allocate_pseudoip(domain, real_ip, now);
+    // 第一次尝试分配  
+    uint32_t result = try_allocate_pseudoip(mutable_domain, real_ip, now);  
+    if (result != 0) return result;  
+
+    // 池已满，清理过期数据后再尝试一次  
+    cleanup_expired_pseudoip();  
+    now = std::chrono::steady_clock::now();  
+    return try_allocate_pseudoip(mutable_domain, real_ip, now);  
 }
 
 // 查询伪地址对应的域名和真实IP
