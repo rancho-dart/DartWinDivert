@@ -24,7 +24,7 @@ static std::string make_key(const std::string& domain, uint32_t real_ip) {
 
 // 判断一个IP是否属于伪地址池（198.18.0.0/15）
 bool is_pseudoip(uint32_t ip) {
-    return (ip & 0xFFFE0000) == PSEUDOIP_START;
+    return (ip & PSEUDOIP_MASK) == PSEUDOIP_START;
 }
 
 // 内部辅助函数：尝试分配一个伪地址，成功返回伪地址，否则返回0

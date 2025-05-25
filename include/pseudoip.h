@@ -8,8 +8,9 @@
 #include <mutex>
 
 // 伪地址池范围常量
-constexpr uint32_t PSEUDOIP_START = 0xC6120000; // 198.18.0.0
+constexpr uint32_t PSEUDOIP_START = 0xC6130000; // 198.19.0.0
 constexpr uint32_t PSEUDOIP_END   = 0xC613FFFF; // 198.19.255.255
+constexpr uint32_t PSEUDOIP_MASK  = 0XFFFF0000; // 255.255.0.0
 constexpr uint32_t PSEUDOIP_POOL_SIZE = PSEUDOIP_END - PSEUDOIP_START + 1;
 
 // 分配生存期（秒）
