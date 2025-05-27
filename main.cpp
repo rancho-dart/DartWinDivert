@@ -26,6 +26,61 @@
 const UINT MTU = 1500;
 static std::string g_resolvable_domain;
 
+static int renew_DHCP_ifce() {
+	DWORD ret;
+	ULONG len;
+
+	// Step 1: Get IP_INTERFACE_INFO (for IpRenewAddress)
+	IP_INTERFACE_INFO* pIfInfo = NULL;
+	len = 0;
+	GetInterfaceInfo(NULL, &len); // 预估长度
+	pIfInfo = (IP_INTERFACE_INFO*)malloc(len);
+	if ((ret = GetInterfaceInfo(pIfInfo, &len)) != NO_ERROR) {
+		printf("GetInterfaceInfo failed: %lu\n", ret);
+		return 1;
+	}
+
+	// Step 2: Get IP_ADAPTER_INFO (for checking DHCP)
+	IP_ADAPTER_INFO* pAdInfo = NULL, * pAdapter;
+	len = 0;
+	GetAdaptersInfo(NULL, &len);
+	pAdInfo = (IP_ADAPTER_INFO*)malloc(len);
+	if ((ret = GetAdaptersInfo(pAdInfo, &len)) != NO_ERROR) {
+		printf("GetAdaptersInfo failed: %lu\n", ret);
+		free(pIfInfo);
+		return 1;
+	}
+
+	// Step 3: Loop through adapters and renew those with DHCP enabled
+	pAdapter = pAdInfo;
+	while (pAdapter) {
+		if (pAdapter->DhcpEnabled) {
+			printf("Interface with DHCP enabled: %s (Index: %lu)\n",
+				pAdapter->AdapterName, pAdapter->Index);
+
+			// 在 pIfInfo 中查找 Index 匹配的 IP_ADAPTER_INDEX_MAP
+			for (int i = 0; i < pIfInfo->NumAdapters; ++i) {
+				if (pIfInfo->Adapter[i].Index == pAdapter->Index) {
+					IP_ADAPTER_INDEX_MAP* map = &pIfInfo->Adapter[i];
+					DWORD res = IpRenewAddress(map);
+					if (res == NO_ERROR) {
+						printf("  -> DHCP renew request sent successfully.\n");
+					}
+					else {
+						printf("  -> IpRenewAddress failed: %lu\n", res);
+					}
+					break;
+				}
+			}
+		}
+		pAdapter = pAdapter->Next;
+	}
+
+	free(pIfInfo);
+	free(pAdInfo);
+	return 0;
+}
+
 uint16_t checksum(const uint8_t* data, size_t len) {
 	uint32_t sum = 0;
 
@@ -50,7 +105,7 @@ uint16_t checksum(const uint8_t* data, size_t len) {
 
 
 // 辅助函数：读取 DNS 名称（处理压缩指针），返回新位置偏移
-int dns_read_name(UINT8* dns_base, UINT8* ptr, UINT8* end, char* out_name, size_t out_size, UINT8** out_next_ptr) {
+static int dns_read_name(UINT8* dns_base, UINT8* ptr, UINT8* end, char* out_name, size_t out_size, UINT8** out_next_ptr) {
 	char name[256] = { 0 };
 	int name_len = 0;
 	int jumped = 0;
@@ -268,7 +323,7 @@ std::string get_public_ip() {
 	return "[" + response + "]";
 }
 
-std::string get_resolvable_domain() {
+static std::string get_resolvable_domain() {
 	if (!g_resolvable_domain.empty()) return g_resolvable_domain;
 	std::string fqdn = get_first_ipv4_and_resolvable_name();
 	if (!fqdn.empty()) {
@@ -297,7 +352,7 @@ std::string get_resolvable_domain() {
 
 
 // 处理入站DNS报文
-void handle_inbound_dns(char* packet, UINT packetLen, WINDIVERT_ADDRESS* addr) {
+static void handle_inbound_dns(char* packet, UINT packetLen, WINDIVERT_ADDRESS* addr) {
 	//printf("[INBOUND][DNS] Received DNS packet (%d bytes)\n", packetLen);
 
 	// 1. 跳过IP和UDP头部，定位DNS数据
@@ -376,7 +431,7 @@ void handle_inbound_dns(char* packet, UINT packetLen, WINDIVERT_ADDRESS* addr) {
 			}
 
 			uint32_t real_ip = (p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3];
-			uint32_t pseudo_ip = allocate_pseudoip(first_name, real_ip);
+			uint32_t pseudo_ip = allocate_pseudoip(first_name, real_ip, DART_PORT);
 			if (pseudo_ip != 0) {
 				p[0] = (pseudo_ip >> 24) & 0xFF;
 				p[1] = (pseudo_ip >> 16) & 0xFF;
@@ -436,14 +491,10 @@ void hex_dump(char* packet, UINT packetLen) {
 }
 
 // 处理入站UDP 55847端口（DART协议）报文
-void handle_inbound_dart(char* packet, UINT& packetLen, WINDIVERT_ADDRESS* addr) {
+static void handle_inbound_dart(char* packet, UINT& packetLen, WINDIVERT_ADDRESS* addr, PWINDIVERT_IPHDR ip_header, PWINDIVERT_UDPHDR udp_header, UINT8* payload, UINT payload_len) {
 	//printf("[INBOUND][UDP 55847] Received UDP 55847 packet (%d bytes)\n", packetLen);
 
 	// 1. 解析IP和UDP头部，定位DART负载
-	PWINDIVERT_IPHDR ip_header = NULL;
-	PWINDIVERT_UDPHDR udp_header = NULL;
-	UINT8* payload = NULL;
-	UINT payload_len = 0;
 	if (!WinDivertHelperParsePacket(packet, packetLen, &ip_header, NULL, NULL, NULL, NULL, NULL, &udp_header, (PVOID*)&payload, &payload_len, NULL, NULL)) {
 		printf("Failed to parse packet headers\n");
 		return;
@@ -479,7 +530,7 @@ void handle_inbound_dart(char* packet, UINT& packetLen, WINDIVERT_ADDRESS* addr)
 	// 查询伪地址
 	// 源IP为UDP包的源IP
 	uint32_t src_ip = ntohl(ip_header->SrcAddr);
-	uint32_t pseudo_ip = allocate_pseudoip(src_addr_str, src_ip);
+	uint32_t pseudo_ip = allocate_pseudoip(src_addr_str, src_ip, ntohs(udp_header->SrcPort));
 	if (pseudo_ip == 0) {
 		printf("Pseudo IP pool exhausted or allocation failed\n");
 		return;
@@ -515,24 +566,6 @@ void handle_inbound_dart(char* packet, UINT& packetLen, WINDIVERT_ADDRESS* addr)
 	PWINDIVERT_UDPHDR UdpHer;
 	PWINDIVERT_ICMPHDR IcmpHdr;
 
-	WinDivertHelperParsePacket(packet, packetLen, NULL, NULL, NULL, &IcmpHdr, NULL, &TcpHdr, &UdpHer, NULL, NULL, NULL, NULL);
-	switch (ip_header->Protocol) {
-	case 1: // ICMP
-		IcmpHdr->Checksum = 0;
-		//IcmpHdr->Checksum = WinDivertHelperCalcChecksums(packet, packetLen, NULL, 0);
-		break;
-	case 6: // TCP
-		TcpHdr->Checksum = 0;
-		//TcpHdr->Checksum = WinDivertHelperCalcChecksums(packet, packetLen, NULL, 0);
-		break;
-	case 17: // UDP
-		UdpHer->Checksum = 0;
-		//UdpHer->Checksum = checksum((uint8_t *)packet, packetLen);
-		break;
-	default:
-		break;
-	}
-
 	WinDivertHelperCalcChecksums(packet, packetLen, NULL, 0); // 计算校验和(它会自动计算IP头和TCP/UDP/ICMP头的校验和)
 
 	//hex_dump(packet, packetLen);
@@ -549,7 +582,7 @@ void handle_inbound_dart(char* packet, UINT& packetLen, WINDIVERT_ADDRESS* addr)
 }
 
 // 处理出站DHCP报文
-void handle_outbound_dhcp(char* packet, UINT& packetLen, WINDIVERT_ADDRESS* addr) {
+static void handle_outbound_dhcp(char* packet, UINT& packetLen, WINDIVERT_ADDRESS* addr) {
 	printf("[OUTBOUND][DHCP] Sent DHCP packet (%d bytes)\n", packetLen);
 
 	// 1. 解析IP和UDP头部，定位DHCP数据
@@ -649,7 +682,7 @@ void handle_outbound_dhcp(char* packet, UINT& packetLen, WINDIVERT_ADDRESS* addr
 	printf("DHCP Option 224 (Dart:v1) added.\n");
 }
 
-void handle_exceed_mtu_packets(const char* packet, const WINDIVERT_IPHDR* ip_header, UINT packetLen, const WINDIVERT_ADDRESS* addr) {
+static void handle_exceed_mtu_packets(const char* packet, const WINDIVERT_IPHDR* ip_header, uint16_t suggested_mut, const WINDIVERT_ADDRESS* addr) {
 	const int ICMP_PAYLOAD_LEN = sizeof(WINDIVERT_IPHDR) + 8;
 	char icmp_pkt[sizeof(WINDIVERT_IPHDR) + sizeof(WINDIVERT_ICMPHDR) + ICMP_PAYLOAD_LEN] = { 0 };
 
@@ -669,21 +702,25 @@ void handle_exceed_mtu_packets(const char* packet, const WINDIVERT_IPHDR* ip_hea
 	// Fill ICMP header
 	icmp->Type = 3;
 	icmp->Code = 4;
-	*(uint16_t*)&icmp->Body = htons((uint16_t)(MTU - (packetLen - MTU))); // Next-Hop MTU
 	icmp->Checksum = 0;
+	uint8_t* unused = (uint8_t*)(&icmp->Checksum + 1);
+	uint8_t* length = unused + 1;
+	uint16_t* mtu = (uint16_t*)(length + 1);
+
+	*mtu = htons(suggested_mut); // Next-Hop MTU
 
 	// Copy original IP header + 8 bytes data
-	int copy_len = packetLen > ICMP_PAYLOAD_LEN ? ICMP_PAYLOAD_LEN : packetLen;
+	int copy_len = suggested_mut > ICMP_PAYLOAD_LEN ? ICMP_PAYLOAD_LEN : suggested_mut;
 	memcpy(icmp_data, packet, copy_len);
-
-	// Checksums
-	icmp->Checksum = checksum((uint8_t*)icmp, sizeof(WINDIVERT_ICMPHDR) + copy_len);
-	ip->Checksum = checksum((uint8_t*)ip, sizeof(WINDIVERT_IPHDR));
+	*length = copy_len + 8;
 
 	// Prepare send address
 	WINDIVERT_ADDRESS fake_addr = *addr;
 	fake_addr.Outbound = 0;
 	fake_addr.Impostor = 1;
+
+	WinDivertHelperCalcChecksums(icmp_pkt, sizeof(icmp_pkt), NULL, 0);
+	//hex_dump(icmp_pkt, sizeof(icmp_pkt));
 
 	HANDLE h = WinDivertOpen("true", WINDIVERT_LAYER_NETWORK, 0, 0);
 	if (h != INVALID_HANDLE_VALUE) {
@@ -695,36 +732,37 @@ void handle_exceed_mtu_packets(const char* packet, const WINDIVERT_IPHDR* ip_hea
 
 
 // 处理出站目标为198.18.0.0/15的IP报文
-void handle_outbound_to_pseudo_addr(char* packet, UINT& packetLen, WINDIVERT_ADDRESS* addr) {
+static void handle_outbound_to_pseudo_addr(char* packet, UINT& packetLen, WINDIVERT_ADDRESS* addr, PWINDIVERT_IPHDR ip_header) {
 	//printf("[OUTBOUND][198.18.0.0/15] Sent IP packet to 198.18.0.0/15 (%d bytes)\n", packetLen);
 
 	// 1. 解析IP头
-	PWINDIVERT_IPHDR ip_header = NULL;
-	WinDivertHelperParsePacket(packet, packetLen, &ip_header, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+	//PWINDIVERT_IPHDR ip_header = NULL;
+	//WinDivertHelperParsePacket(packet, packetLen, &ip_header, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
 
-	if (!ip_header) {
-		printf("Invalid IP header\n");
-		return;
-	}
-	
-    // Convert the unsigned int IP addresses to strings using inet_ntoa or similar function before passing to printf.  
+	//if (!ip_header) {
+	//	printf("Invalid IP header\n");
+	//	return;
+	//}
 
-    char srcAddrStr[INET_ADDRSTRLEN];  
-    char dstAddrStr[INET_ADDRSTRLEN];  
+	// Convert the unsigned int IP addresses to strings using inet_ntoa or similar function before passing to printf.  
 
-    // Convert the source and destination addresses to strings  
-    inet_ntop(AF_INET, &(ip_header->SrcAddr), srcAddrStr, INET_ADDRSTRLEN);  
-    inet_ntop(AF_INET, &(ip_header->DstAddr), dstAddrStr, INET_ADDRSTRLEN);  
+	char srcAddrStr[INET_ADDRSTRLEN];
+	char dstAddrStr[INET_ADDRSTRLEN];
 
-    // Use the converted strings in printf  
-    printf("[OUTBOUND]: %s to %s\n", srcAddrStr, dstAddrStr);
+	// Convert the source and destination addresses to strings  
+	inet_ntop(AF_INET, &(ip_header->SrcAddr), srcAddrStr, INET_ADDRSTRLEN);
+	inet_ntop(AF_INET, &(ip_header->DstAddr), dstAddrStr, INET_ADDRSTRLEN);
+
+	// Use the converted strings in printf  
+	printf("[OUTBOUND]: %s to %s\n", srcAddrStr, dstAddrStr);
 
 	uint32_t pseudo_ip = ntohl(ip_header->DstAddr);
 
 	// 1.1 查找伪地址对应的域名和真实IP
 	std::string domain;
+	uint16_t udpPort = 0;
 	uint32_t real_ip = 0;
-	if (!query_pseudoip(pseudo_ip, domain, real_ip)) {
+	if (!query_by_pseudoip(pseudo_ip, domain, real_ip, udpPort)) {
 		printf("Pseudo IP not found in mapping table\n");
 		return;
 	}
@@ -753,8 +791,9 @@ void handle_outbound_to_pseudo_addr(char* packet, UINT& packetLen, WINDIVERT_ADD
 	}
 
 	bool df_set = (ip_header->FragOff0 & 0x40) != 0; // DF位在IP头的FragOff0字段bit6
-	if (packetLen > MTU && df_set) {
-		handle_exceed_mtu_packets(packet, ip_header, new_packet_len, addr);
+	if (new_packet_len > MTU && df_set) {
+		int suggested_mtu = MTU - (8 + DartHeaderLength(&dart_hdr));
+		handle_exceed_mtu_packets(packet, ip_header, suggested_mtu, addr);
 		packetLen = 0;
 		return;
 	}
@@ -768,7 +807,7 @@ void handle_outbound_to_pseudo_addr(char* packet, UINT& packetLen, WINDIVERT_ADD
 	// 6. 构造UDP头
 	PWINDIVERT_UDPHDR udp_header = (PWINDIVERT_UDPHDR)(packet + ip_header_len);
 	udp_header->SrcPort = htons(DART_PORT);
-	udp_header->DstPort = htons(DART_PORT);
+	udp_header->DstPort = htons(udpPort);
 	udp_header->Length = htons((USHORT)(udp_header_len + dart_header_len + orig_payload_len));
 	udp_header->Checksum = checksum((uint8_t*)packet, packetLen);
 
@@ -800,29 +839,18 @@ void handle_outbound_to_pseudo_addr(char* packet, UINT& packetLen, WINDIVERT_ADD
 
 }
 
-int main() {
-	// 初始化 Winsock
-	WSADATA wsaData;
-	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-		printf("WSAStartup failed\n");
-		return -1;
-	}
-
-	get_resolvable_domain();
-
+static void divert_loop() {
 	HANDLE handle = WinDivertOpen(
 		// 过滤入站DNS、入站UDP 55847、出站UDP 67/68（DHCP）、出站198.18.0.0/15、其他全部
-		"(inbound and udp.DstPort == 53) or "
-		"(inbound and udp.DstPort == 55847) or "
-		"(inbound and udp.SrcPort == 55847) or "
-		"(outbound and udp.SrcPort == 68 and udp.DstPort == 67) or "
-		"(outbound and ip.DstAddr >= 198.18.0.0 and ip.DstAddr <= 198.19.255.255) or "
-		"true",
+		"(inbound and udp.DstPort == 55847) or " // 入站DART，需要进行NAT:DART->4转换
+		"(outbound and ip.DstAddr >= 198.18.0.0 and ip.DstAddr <= 198.19.255.255) or " // 出站到伪地址，需要进行NAT:4->DART转换
+		"(inbound and udp.SrcPort == 53) or " // 入站DNS，进行伪地址替换
+		"(outbound and udp.SrcPort == 68 and udp.DstPort == 67)", // 出站DHCP，需要添加OPTION 224
 		WINDIVERT_LAYER_NETWORK, 0, 0);
 	if (handle == INVALID_HANDLE_VALUE) {
 		printf("WinDivertOpen failed: %d\n", GetLastError());
 		WSACleanup();
-		return -1;
+		return;
 	}
 	printf("WinDivert open successful!\n");
 
@@ -838,25 +866,28 @@ int main() {
 
 		PWINDIVERT_IPHDR ip_header = NULL;
 		PWINDIVERT_UDPHDR udp_header = NULL;
-		WinDivertHelperParsePacket(packet, packetLen, &ip_header, NULL, NULL, NULL, NULL, NULL, &udp_header, NULL, NULL, NULL, NULL);
+		UINT8* payload = NULL;
+		UINT payload_len = 0;
+
+		WinDivertHelperParsePacket(packet, packetLen, &ip_header, NULL, NULL, NULL, NULL, NULL, &udp_header, (PVOID*)&payload, &payload_len, NULL, NULL);
 
 		if (addr.Outbound) {
 			if (udp_header && ntohs(udp_header->SrcPort) == 68 && ntohs(udp_header->DstPort) == 67) {
 				handle_outbound_dhcp(packet, packetLen, &addr);
 			}
 			else if (ip_header && is_pseudoip(ntohl(ip_header->DstAddr))) {
-				handle_outbound_to_pseudo_addr(packet, packetLen, &addr);
+				handle_outbound_to_pseudo_addr(packet, packetLen, &addr, ip_header);
 			}
 			else {
 				// 其他出站报文直接放行
 			}
 		}
 		else {
-			if (udp_header && ntohs(udp_header->SrcPort) == 53) {
-				handle_inbound_dns(packet, packetLen, &addr);
+			if (udp_header && ntohs(udp_header->DstPort) == 55847) {
+				handle_inbound_dart(packet, packetLen, &addr, ip_header, udp_header, payload, payload_len);
 			}
-			else if (udp_header && ntohs(udp_header->DstPort) == 55847) {
-				handle_inbound_dart(packet, packetLen, &addr);
+			else if (udp_header && ntohs(udp_header->SrcPort) == 53) {
+				handle_inbound_dns(packet, packetLen, &addr);
 			}
 			else {
 				// 其他入站报文直接放行
@@ -871,6 +902,35 @@ int main() {
 	}
 
 	WinDivertClose(handle);
+
+}
+
+int main() {
+	// 初始化 Winsock
+	WSADATA wsaData;
+	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+		printf("WSAStartup failed\n");
+		return -1;
+	}
+
+	// 获取可解析的域名（如果有）
+	get_resolvable_domain();
+
+	// 启动伪IP清理线程
+	start_pseudoip_cleanup_thread();
+
+	// 启动后台线程处理WinDivert循环
+	std::thread divertThread(divert_loop);
+
+	// 等待线程启动
+	Sleep(1000);
+
+	// 主线程执行DHCP续租。WinDivert会在后台处理报文，加上Option 224告诉 DHCP 服务器这是一台支持Dart协议的设备
+	renew_DHCP_ifce();
+
+	// 等待后台线程结束（如果需要）
+	divertThread.join();
+
 	WSACleanup(); // 程序结束时清理
 	return 0;
 }
