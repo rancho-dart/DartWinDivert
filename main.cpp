@@ -25,6 +25,7 @@
 
 const UINT MTU = 1500;
 static std::string g_resolvable_domain;
+volatile bool g_Running = true;
 
 static int renew_DHCP_ifce() {
 	DWORD ret;
@@ -562,9 +563,9 @@ static void handle_inbound_dart(char* packet, UINT& packetLen, WINDIVERT_ADDRESS
 	packetLen = (UINT)new_packet_len;
 
 	// 检查报文，如果是TCP或者UDP,计算其校验和
-	PWINDIVERT_TCPHDR TcpHdr;
-	PWINDIVERT_UDPHDR UdpHer;
-	PWINDIVERT_ICMPHDR IcmpHdr;
+	//PWINDIVERT_TCPHDR TcpHdr;
+	//PWINDIVERT_UDPHDR UdpHer;
+	//PWINDIVERT_ICMPHDR IcmpHdr;
 
 	WinDivertHelperCalcChecksums(packet, packetLen, NULL, 0); // 计算校验和(它会自动计算IP头和TCP/UDP/ICMP头的校验和)
 
@@ -854,11 +855,15 @@ static void divert_loop() {
 	}
 	printf("WinDivert open successful!\n");
 
+	// 设置接收超时（单位：毫秒）
+	UINT64 timeout = 1000; // 1秒
+	WinDivertSetParam(handle, WINDIVERT_PARAM_QUEUE_TIME, timeout);
+
 	char packet[MAX_PACKET_SIZE];
 	UINT packetLen;
 	WINDIVERT_ADDRESS addr;
 
-	while (TRUE) {
+	while (g_Running) {
 		if (!WinDivertRecv(handle, packet, sizeof(packet), &packetLen, &addr)) {
 			printf("WinDivertRecv failed: %d\n", GetLastError());
 			continue;
@@ -902,10 +907,9 @@ static void divert_loop() {
 	}
 
 	WinDivertClose(handle);
-
 }
 
-int main() {
+int AppMain() {
 	// 初始化 Winsock
 	WSADATA wsaData;
 	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -938,4 +942,91 @@ int main() {
 
 
 
+// 将程序注册为Windows服务
+
+SERVICE_STATUS        g_ServiceStatus = { 0 };
+SERVICE_STATUS_HANDLE g_StatusHandle = NULL;
+HANDLE                g_ServiceStopEvent = INVALID_HANDLE_VALUE;
+
+void WINAPI ServiceMain(DWORD argc, LPTSTR* argv);
+void WINAPI ServiceCtrlHandler(DWORD);
+
+int main(int argc, char* argv[]) {
+	SERVICE_TABLE_ENTRY ServiceTable[] = {
+        { (LPWSTR)L"DartWinDivertService", (LPSERVICE_MAIN_FUNCTION)ServiceMain },
+		{ NULL, NULL }
+	};
+	if (!StartServiceCtrlDispatcher(ServiceTable)) {
+		// 如果不是以服务方式启动，在此直接运行主逻辑
+		AppMain(); 
+        // Convert the string literal to a wide string (LPCWSTR) using the L prefix  
+	}
+	return 0;
+}
+
+void WINAPI ServiceMain(DWORD argc, LPTSTR* argv) {
+	while (!IsDebuggerPresent()) Sleep(100);
+	// 或者
+	// DebugBreak(); // 直接弹出调试器选择窗口
+
+	g_StatusHandle = RegisterServiceCtrlHandler(L"DartWinDivertService", ServiceCtrlHandler);
+	if (!g_StatusHandle) return;
+
+	g_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+	g_ServiceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP;
+	g_ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
+	SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+
+	g_ServiceStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+	if (g_ServiceStopEvent == NULL) {
+		g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+		SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+		return;
+	}
+
+	// 初始化 Winsock
+	WSADATA wsaData;
+	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+		g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+		SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+		return;
+	}
+
+	// 其他初始化
+	get_resolvable_domain();
+	start_pseudoip_cleanup_thread();
+
+	std::thread divertThread(divert_loop);
+	
+	Sleep(1000);
+	renew_DHCP_ifce();
+
+	g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
+	SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+
+	// 等待服务停止信号
+	WaitForSingleObject(g_ServiceStopEvent, INFINITE);
+
+	// 清理
+	// 通知后台线程退出（如有需要，可用全局变量或事件）
+	// 这里假设 divert_loop 能响应退出信号
+	divertThread.join();
+	WSACleanup();
+
+	g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+	SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+}
+
+void WINAPI ServiceCtrlHandler(DWORD CtrlCode) {
+	switch (CtrlCode) {
+	case SERVICE_CONTROL_STOP:
+		g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
+		SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+		g_Running = false; // 停止主循环
+		SetEvent(g_ServiceStopEvent);
+		break;
+	default:
+		break;
+	}
+}
 
