@@ -872,12 +872,7 @@ static void divert_loop() {
 
 	if (handle == INVALID_HANDLE_VALUE) {
 		printf("WinDivertOpen failed: %d\n", GetLastError());
-		// Typical errors:
-		//    5 (ERROR_ACCESS_DENIED)¡ú No administrator privileges. - Run as administrator.
-		//	 87 (ERROR_INVALID_PARAMETER)¡ú Filter rule syntax error. - Check the filter string.
-		//	577 (ERROR_INVALID_IMAGE_HASH)¡ú Driver unsigned or blocked by security policy. - Check driver signature.
-
-        WSACleanup();
+		WSACleanup();
 		return;
 	}
 	

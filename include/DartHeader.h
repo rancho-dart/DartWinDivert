@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#define MAX_PACKET_SIZE 0xFFFF
+#define MAX_PACKET_SIZE 0x10000
 
 // 定义跨平台的 packed 宏
 #if defined(_MSC_VER)
@@ -27,4 +27,4 @@ struct DartHeader {
     // char src_addr[src_addr_len];
 } END_PACKED_STRUCT;
 
-size_t DartHeaderLength(const DartHeader* header);
+uint16_t DartHeaderLength(const DartHeader* header);
