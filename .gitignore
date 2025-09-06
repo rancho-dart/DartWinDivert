@@ -1,0 +1,17 @@
+# Visual Studio 临时文件
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# 编译输出
+**/bin/
+**/obj/
+**/Release/
+**/Debug/
+*.exe
+*.msi
+
+# 安装项目特有
+DartWinDivertSetup/Release/
