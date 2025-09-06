@@ -1,13 +1,3 @@
-<title>DART WinDivert</title>
-<description>DART WinDivert</description>
-<author>DART Team</author>
-<copyright>Copyright (c) 2015 DART Team</copyright>
-<url>https://github.com/rancho-dart/DartWinDivert</url>
-<license>MIT</license>
-<version>1.0.0</version>
-<tags>DART, WinDivert, DART-Ready</tags>
-
-
 DART WinDivert Introduction
 ===========================
 DART WinDivert is an implementation of the DART protocol on Windows systems. When a Windows host runs DART WinDivert, the host behaves externally as a DART-Ready device.
