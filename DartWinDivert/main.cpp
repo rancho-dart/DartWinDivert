@@ -24,23 +24,35 @@
 #pragma comment(lib, "dnsapi.lib")
 #pragma comment(lib, "winhttp.lib")
 
+
+#define REGISTRY_PATH "SOFTWARE\\DartWinDivert"
+#define REGISTRY_MTU_VALUE_NAME "PMTU"
+
 const UINT DEFAULT_MTU = 1500;
 
 
 // Read PMTU from registry, default to 1500 if not found or error
 UINT ReadPMTUFromRegistry() {
     HKEY hKey;
-    DWORD mtu = DEFAULT_MTU;
+    DWORD pmtu = DEFAULT_MTU;
     DWORD dwType = REG_DWORD;
-    DWORD dwSize = sizeof(mtu);
+    DWORD dwSize = sizeof(pmtu);
 
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\DartWinDivert", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        if (RegQueryValueExA(hKey, "PMTU", NULL, &dwType, (LPBYTE)&mtu, &dwSize) != ERROR_SUCCESS || dwType != REG_DWORD) {
-			mtu = DEFAULT_MTU;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, REGISTRY_PATH, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        if (RegQueryValueExA(hKey, REGISTRY_MTU_VALUE_NAME, NULL, &dwType, (LPBYTE)&pmtu, &dwSize) != ERROR_SUCCESS || dwType != REG_DWORD) {
+			pmtu = DEFAULT_MTU;
         }
         RegCloseKey(hKey);
     }
-    return mtu;
+    return pmtu;
+}
+
+void WritePMTUToRegistry(DWORD pmtu) {
+	HKEY hKey;
+	if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, REGISTRY_PATH, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+		RegSetValueExA(hKey, REGISTRY_MTU_VALUE_NAME, 0, REG_DWORD, (const BYTE*)&pmtu, sizeof(DWORD));
+		RegCloseKey(hKey);
+	}
 }
 
 // Replace const UINT MTU with global variable
@@ -455,7 +467,7 @@ static void handle_inbound_dns(char* packet, UINT packetLen, WINDIVERT_ADDRESS* 
 				p[1] = (pseudo_ip >> 16) & 0xFF;
 				p[2] = (pseudo_ip >> 8) & 0xFF;
 				p[3] = (pseudo_ip) & 0xFF;
-				printf("A record: %s, real IP: %u.%u.%u.%u -> pseudo IP: %u.%u.%u.%u (pseudo domain: %s)\n",
+				printf("DNS A record: %s, IP: %u.%u.%u.%u -> pseudo IP: %u.%u.%u.%u (FQDN: %s)\n",
 					name,
 					(real_ip >> 24) & 0xFF, (real_ip >> 16) & 0xFF, (real_ip >> 8) & 0xFF, real_ip & 0xFF,
 					(pseudo_ip >> 24) & 0xFF, (pseudo_ip >> 16) & 0xFF, (pseudo_ip >> 8) & 0xFF, pseudo_ip & 0xFF,
@@ -565,9 +577,9 @@ static void handle_inbound_dart(char* packet, UINT& packetLen, WINDIVERT_ADDRESS
 	}
 
 	// Print
-	printf("DART src_addr: %.*s, dst_addr: %.*s\n",
-		dart->src_addr_len, src_addr,
-		dart->dst_addr_len, dst_addr);
+	//printf("DART src_addr: %.*s, dst_addr: %.*s\n",
+	//	dart->src_addr_len, src_addr,
+	//	dart->dst_addr_len, dst_addr);
 
 	// 5. Construct new IP packet (overwrite original packet memory)
 	// Move dart_data after UDP header, overwrite original UDP payload
@@ -618,7 +630,7 @@ static void handle_inbound_dart(char* packet, UINT& packetLen, WINDIVERT_ADDRESS
 					if (mss_val > local_mss) {
 						options[i + 2] = (local_mss >> 8) & 0xFF;
 						options[i + 3] = local_mss & 0xFF;
-						printf("TCP SYN: MSS %u -> %u\n", mss_val, local_mss);
+						printf("Inbound  TCP SYN: MSS %u -> %u\n", mss_val, local_mss);
 						WinDivertHelperCalcChecksums(packet, packetLen, NULL, 0);
 					}
 					break;
@@ -632,15 +644,15 @@ static void handle_inbound_dart(char* packet, UINT& packetLen, WINDIVERT_ADDRESS
 	WinDivertHelperCalcChecksums(packet, packetLen, NULL, 0); // Calculate checksum (automatically calculates IP, TCP/UDP/ICMP header checksums)
 
 	//hex_dump(packet, packetLen);
-	char srcAddrStr[INET_ADDRSTRLEN];
-	char dstAddrStr[INET_ADDRSTRLEN];
+	//char srcAddrStr[INET_ADDRSTRLEN];
+	//char dstAddrStr[INET_ADDRSTRLEN];
 
 	// Convert the source and destination addresses to strings  
-	inet_ntop(AF_INET, &(ip_header->SrcAddr), srcAddrStr, INET_ADDRSTRLEN);
-	inet_ntop(AF_INET, &(ip_header->DstAddr), dstAddrStr, INET_ADDRSTRLEN);
+	//inet_ntop(AF_INET, &(ip_header->SrcAddr), srcAddrStr, INET_ADDRSTRLEN);
+	//inet_ntop(AF_INET, &(ip_header->DstAddr), dstAddrStr, INET_ADDRSTRLEN);
 
 	// Use the converted strings in printf  
-	printf("[INBOUND]: %s to %s\n", srcAddrStr, dstAddrStr);
+	//printf("[INBOUND]: %s to %s\n", srcAddrStr, dstAddrStr);
 
 }
 
@@ -790,16 +802,16 @@ static void handle_exceed_mtu_packets(const char* packet, const WINDIVERT_IPHDR*
 static void handle_outbound_to_pseudo_addr(char* packet, UINT& packetLen, WINDIVERT_ADDRESS* addr, PWINDIVERT_IPHDR ip_header, UINT8 protocol, PWINDIVERT_ICMPHDR icmp_header, PWINDIVERT_UDPHDR udp_header, PWINDIVERT_TCPHDR tcp_header, UINT8* payload, UINT payload_len) {
 	//printf("[OUTBOUND][198.18.0.0/15] Sent IP packet to 198.18.0.0/15 (%d bytes)\n", packetLen);
 
-	// Convert the unsigned int IP addresses to strings using inet_ntoa or similar function before passing to printf.  
-	char srcAddrStr[INET_ADDRSTRLEN];
-	char dstAddrStr[INET_ADDRSTRLEN];
+	//// Convert the unsigned int IP addresses to strings using inet_ntoa or similar function before passing to printf.  
+	//char srcAddrStr[INET_ADDRSTRLEN];
+	//char dstAddrStr[INET_ADDRSTRLEN];
 
-	// Convert the source and destination addresses to strings  
-	inet_ntop(AF_INET, &(ip_header->SrcAddr), srcAddrStr, INET_ADDRSTRLEN);
-	inet_ntop(AF_INET, &(ip_header->DstAddr), dstAddrStr, INET_ADDRSTRLEN);
+	//// Convert the source and destination addresses to strings  
+	//inet_ntop(AF_INET, &(ip_header->SrcAddr), srcAddrStr, INET_ADDRSTRLEN);
+	//inet_ntop(AF_INET, &(ip_header->DstAddr), dstAddrStr, INET_ADDRSTRLEN);
 
 	// Use the converted strings in printf  
-	printf("[OUTBOUND]: %s to %s\n", srcAddrStr, dstAddrStr);
+	//printf("[OUTBOUND]: %s to %s\n", srcAddrStr, dstAddrStr);
 
 	uint32_t pseudo_ip = ntohl(ip_header->DstAddr);
 
@@ -840,11 +852,12 @@ static void handle_outbound_to_pseudo_addr(char* packet, UINT& packetLen, WINDIV
 			uint8_t len = options[i + 1];
 			if (len < 2 || i + len > options_len) break;
 			if (kind == 2 && len == 4) {
+				uint16_t mss_val = (options[i + 2] << 8) | options[i + 3];
 				// MSS option found, set to (MTU - IP header - TCP header - UDP header - DART header)
 				uint16_t desiredMSS = (uint16_t)(g_MTU - sizeof(WINDIVERT_IPHDR) - tcp_hdr_len - 8 - DartHeaderLength(&dart_hdr));
 				options[i + 2] = (desiredMSS >> 8) & 0xFF;
 				options[i + 3] = desiredMSS & 0xFF;
-				printf("TCP SYN: MSS modified to %u\n", desiredMSS);
+				printf("Outbound TCP SYN: MSS %u -> %u\n", mss_val, desiredMSS);
 				break;
 			}
 			i += len;
@@ -923,7 +936,8 @@ static void divert_loop() {
 			"(inbound and udp.DstPort == 55847) or "										// Inbound DART, need NAT: DART->4 conversion
 			"(outbound and ip.DstAddr >= 198.18.0.0 and ip.DstAddr <= 198.19.255.255) or "	// Outbound to pseudo address, need NAT: 4->DART conversion
 			"(inbound and udp.SrcPort == 53) or "											// Inbound DNS, perform pseudo address replacement
-			"(outbound and udp.SrcPort == 68 and udp.DstPort == 67)",						// Outbound DHCP, need to add OPTION 224
+			"(outbound and udp.SrcPort == 68 and udp.DstPort == 67) or"						// Outbound DHCP, need to add OPTION 224
+			"(inbound and icmp and icmp.Type == 3 and icmp.Code == 4)",						// ICMP 'Packet Too Big' messages
 			WINDIVERT_LAYER_NETWORK, 0, 0);
 
 	if (handle == INVALID_HANDLE_VALUE) {
@@ -1003,6 +1017,20 @@ static void divert_loop() {
 					// Replace the A record to a pseduo address if the queried host is DART-ready
 					handle_inbound_dns(packet, packetLen, &addr, ip_header, udp_header, payload, payload_len);
 				}
+				else if (icmp_header && icmp_header->Type == 3 && icmp_header->Code == 4) { // If is an ICMP 'Packet Too Big' message
+					// Set g_MTU to the suggested MTU in the ICMP message
+					uint16_t suggested_mtu = ntohs(*(uint16_t*)((uint8_t*)(&icmp_header->Checksum + 1) + 2 ));
+					if (suggested_mtu >= 576 && suggested_mtu < g_MTU) { // Minimum IPv4 MTU
+						// Strictly speaking, we should maintain a mapping table from IP addresses to their respective PMTU values. 
+						// For simplicity, here we use a single global PMTU (since the bottleneck usually exists only on the path 
+						// between the local gateway and the public network).
+
+						g_MTU = suggested_mtu;
+						printf("MTU updated to %u based on ICMP [PACKET TOO BIG] message\n", g_MTU);
+
+						//WritePMTUToRegistry(g_MTU);  // If we don't write it into registry, everytime it restarts, the PMTU will restore to default. Maybe this is necessary.
+					}
+				}	
 				else {
 					// Other inbound packets are passed through directly
 				}
