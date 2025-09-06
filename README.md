@@ -26,12 +26,12 @@ Subsequently, applications will send packets to this pseudo address. DART WinDiv
 #### 2.3 DART WinDivert intercepts received DART-encapsulated packets
 Find the corresponding pseudo address from the pseudo address allocation table, modify the source address in the IP header to the pseudo address, remove the DART header, and send out the packet.
 
-### Design Concept of DART WinDivert
+## Design Concept of DART WinDivert
 
 1. DART WinDivert is designed to run either as a standalone application or as a service in the Windows system.
 1. If designed as a Windows driver, it should have higher efficiency. However, this program is only intended to verify the DART protocol (and the NAT-DART-4 mechanism), so it currently implements this using WinDivert in user mode.
 
-### Compilation of DART WinDivert
+## Compilation of DART WinDivert
 
 1. Obtain WinDivert
    Get the binary package of WinDivert and copy the DLL/LIB/SYS files from it into the DART WinDivert directory.

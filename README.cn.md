@@ -22,7 +22,7 @@ DART WinDivert通过截获DHCP REQUEST数据包来实现这个功能。
 对于终端收到的DNS应答数据包，DART WinDivert会检查DNS应答数据包中的DNS记录。如果远程主机支持DART协议，那么就在伪地址池中分配一个伪地址，记录伪地址与被查询的远程主机的映射，并修改DNS应答数据包中的DNS记录。
 
 #### 2.2 DART WinDivert截获发送到伪地址的报文
-随后应用程序会发送报文到该伪地址。DART WinDivert会截获主机发现的所有报文，从中取出目标地址。如果目标地址是伪地址，那么DART WinDivert会检查伪地址分配表中该伪地址的映射，并找出对应的远程主机。然后插入DART头，并修改IP头中的目标地址为远程主机的真实IP地址，将报文发出。
+随后应用程序会发送报文到该伪地址。DART WinDivert会截获主机发送的所有报文，从中取出目标地址。如果目标地址是伪地址，那么DART WinDivert会检查伪地址分配表中该伪地址的映射，并找出对应的远程主机。然后插入DART头，并修改IP头中的目标地址为远程主机的真实IP地址，将报文发出。
 
 #### 2.3 DART WinDivert截获收到的DART封装的报文
     
@@ -41,12 +41,12 @@ DART WinDivert通过截获DHCP REQUEST数据包来实现这个功能。
 
 2. 编译DART WinDivert
     打开DartWinDivert的目录，在Visual Studio中编译DartWinDivert.sln。
-    编译成功后，会生成DartWinDivert.exe和安装包DartWinDivertSetup.msi。安装包在安装时会自动将DartWinDivert注册为系统的服务。
+    编译成功后，会生成DartWinDivert.exe和安装包DartWinDivertSetup.msi。安装包在安装时会自动将DartWinDivert注册为系统服务。
 
 ## DART WinDivert的运行
 
 1. 作为独立的应用程序运行
-    必须以管理员权限运行DartWinDivert.exe。DartWinDivert会打开一个调试窗口，从中可以观察到必要的调试信息。
+    必须以管理员权限运行DartWinDivert.exe。DartWinDivert会打开一个Console窗口，从中可以观察到必要的调试信息。
 2. 作为服务运行
     如果是执行安装包安装，那么DartWinDivert会自动注册为系统服务。
 
