@@ -36,18 +36,25 @@ DART WinDivert通过截获DHCP REQUEST数据包来实现这个功能。
 
 ## DART WinDivert的编译
 1. 获取WinDivert
+    
     获取WinDivert的二进制包，并复制其中的DLL/LIB/SYS文件到DART WinDivert的目录下。
+    
     下载地址：https://reqrypt.org/windivert.html
 
 2. 编译DART WinDivert
+    
     打开DartWinDivert的目录，在Visual Studio中编译DartWinDivert.sln。
+    
     编译成功后，会生成DartWinDivert.exe和安装包DartWinDivertSetup.msi。安装包在安装时会自动将DartWinDivert注册为系统服务。
 
 ## DART WinDivert的运行
 
 1. 作为独立的应用程序运行
+    
     必须以管理员权限运行DartWinDivert.exe。DartWinDivert会打开一个Console窗口，从中可以观察到必要的调试信息。
+
 2. 作为服务运行
+    
     如果是执行安装包安装，那么DartWinDivert会自动注册为系统服务。
 
 DartWinDivert正常工作时，解析一个支持DART协议的主机域名（譬如www.dart-proto.cn），会得到198.19.0.0/16网段内的IP地址。

@@ -34,19 +34,24 @@ Find the corresponding pseudo address from the pseudo address allocation table, 
 ## Compilation of DART WinDivert
 
 1. Obtain WinDivert
+
    Get the binary package of WinDivert and copy the DLL/LIB/SYS files from it into the DART WinDivert directory.
    Download URL: https://reqrypt.org/windivert.html
 
 1. Compile DART WinDivert
+   
    Open the DartWinDivert directory and compile DartWinDivert.sln in Visual Studio.
+   
    After successful compilation, DartWinDivert.exe and the installation package DartWinDivertSetup.msi will be generated. The installation package will automatically register DartWinDivert as a system service during installation.
 
 ## Running DART WinDivert
 
 1. Run as a standalone application
+   
    DartWinDivert.exe must be run with administrator privileges. DartWinDivert will open a debug window where necessary debugging information can be observed.
    
 1. Run as a service
+   
    If installed via the installation package, DartWinDivert will automatically register as a system service.
 
 When DartWinDivert works properly, resolving a domain name of a host that supports the DART protocol (e.g., www.dart-proto.cn) will yield an IP address within the 198.19.0.0/16 network segment.
