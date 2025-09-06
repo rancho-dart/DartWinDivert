@@ -14,28 +14,28 @@ struct PseudoIpRecord {
 };
 
 static std::mutex pseudoip_mutex;
-static std::unordered_map<uint32_t, PseudoIpRecord> pseudoip_map; // 伪地址 -> 记录
-static std::unordered_map<std::string, uint32_t> domain_ip_port_map; // 域名+真实IP+端口 -> 伪地址
+static std::unordered_map<uint32_t, PseudoIpRecord> pseudoip_map; // pseudo address -> record
+static std::unordered_map<std::string, uint32_t> domain_ip_port_map; // domain + real IP + port -> pseudo address
 static uint32_t next_alloc = PSEUDOIP_START;
 
-// 辅助函数：将域名、真实IP和端口拼接为唯一key
+// Helper function: concatenate domain, real IP, and port as a unique key
 static std::string make_key(const std::string& domain, uint32_t real_ip, uint16_t port) {
     return domain + "#" + std::to_string(real_ip) + "#" + std::to_string(port);
 }
 
-// 判断一个IP是否属于伪地址池（198.18.0.0/15）
+// Determine whether an IP belongs to the pseudo address pool (198.18.0.0/15)
 bool is_pseudoip(uint32_t ip) {
     return (ip & PSEUDOIP_MASK) == PSEUDOIP_START;
 }
 
-// 内部辅助函数：尝试分配一个伪地址，成功返回伪地址，否则返回0
+// Internal helper function: try to allocate a pseudo address, return pseudo address if successful, otherwise return 0
 static uint32_t try_allocate_pseudoip(const std::string& domain, uint32_t real_ip, uint16_t port, std::chrono::steady_clock::time_point now) {
     std::string key = make_key(domain, real_ip, port);
     for (uint32_t i = 0; i < PSEUDOIP_POOL_SIZE; ++i) {
         uint32_t candidate = PSEUDOIP_START + ((next_alloc - PSEUDOIP_START + i) % PSEUDOIP_POOL_SIZE);
         auto rec = pseudoip_map.find(candidate);
         if (rec == pseudoip_map.end() || rec->second.expire_time <= now) {
-            // 分配
+            // Allocate
             pseudoip_map[candidate] = PseudoIpRecord{
                 domain,
                 real_ip,
@@ -50,49 +50,49 @@ static uint32_t try_allocate_pseudoip(const std::string& domain, uint32_t real_i
     return 0;
 }
 
-// 修改 allocate_pseudoip 函数中 domain 的处理方式，避免直接修改 const std::string& 参数  
-uint32_t allocate_pseudoip(const std::string& domain, uint32_t real_ip, uint16_t port) {  
-	// 保留域名、真实IP与伪地址的映射关系，这样我们收到发往伪地址的报文的时候可以还原真实的IP和DART报头的目标地址。
-	// 为什么要把端口也包含在内？因为一个DART报文从一个NAT网关出来的时候，UDP的源端口会被修改，所以我们需要记录这个端口。
-	// 这样，在构造返回报文的时候将其作为目标端口，DART报文才能够穿越NAT网关正确返回。
+// Modify the handling of domain in allocate_pseudoip to avoid directly modifying the const std::string& parameter
+uint32_t allocate_pseudoip(const std::string& domain, uint32_t real_ip, uint16_t port) {
+    // Preserve the mapping between domain, real IP, and pseudo address, so that when we receive packets sent to the pseudo address, we can restore the real IP and the destination address in the DART header.
+    // Why include the port? Because when a DART packet comes out of a NAT gateway, the UDP source port will be changed, so we need to record this port.
+    // In this way, when constructing the return packet, use it as the destination port, so the DART packet can traverse the NAT gateway and return correctly.
     std::lock_guard<std::mutex> lock(pseudoip_mutex);
 
-    auto now = std::chrono::steady_clock::now();  
-    std::string mutable_domain = domain; // 创建一个可修改的副本  
-    // 如果域名不以.结尾，则添加一个点  
-    if (mutable_domain.back() != '.') {  
-        mutable_domain += '.';  
-    }  
+    auto now = std::chrono::steady_clock::now();
+    std::string mutable_domain = domain; // Create a modifiable copy
+    // If the domain does not end with '.', add a dot
+    if (mutable_domain.back() != '.') {
+        mutable_domain += '.';
+    }
 
-    std::string key = make_key(mutable_domain, real_ip, port);  
+    std::string key = make_key(mutable_domain, real_ip, port);
 
-    // 已分配过，刷新分配时间并返回  
-    auto it = domain_ip_port_map.find(key);  
-    if (it != domain_ip_port_map.end()) {  
-        uint32_t pseudoip = it->second;  
-        // 检查是否过期  
-        auto rec_it = pseudoip_map.find(pseudoip);  
-        if (rec_it != pseudoip_map.end() && rec_it->second.expire_time > now) {  
-            // 刷新分配时间  
-            rec_it->second.expire_time = now + std::chrono::seconds(PSEUDOIP_TTL);  
-            return pseudoip;  
-        }  
-        // 过期则清理  
-        pseudoip_map.erase(pseudoip);  
-        domain_ip_port_map.erase(it);  
-    }  
+    // Already allocated, refresh allocation time and return
+    auto it = domain_ip_port_map.find(key);
+    if (it != domain_ip_port_map.end()) {
+        uint32_t pseudoip = it->second;
+        // Check if expired
+        auto rec_it = pseudoip_map.find(pseudoip);
+        if (rec_it != pseudoip_map.end() && rec_it->second.expire_time > now) {
+            // Refresh allocation time
+            rec_it->second.expire_time = now + std::chrono::seconds(PSEUDOIP_TTL);
+            return pseudoip;
+        }
+        // If expired, clean up
+        pseudoip_map.erase(pseudoip);
+        domain_ip_port_map.erase(it);
+    }
 
-    // 第一次尝试分配  
-    uint32_t result = try_allocate_pseudoip(mutable_domain, real_ip, port, now);  
-    if (result != 0) return result;  
+    // First attempt to allocate
+    uint32_t result = try_allocate_pseudoip(mutable_domain, real_ip, port, now);
+    if (result != 0) return result;
 
-    // 池已满，清理过期数据后再尝试一次  
-    cleanup_expired_pseudoip();  
-    now = std::chrono::steady_clock::now();  
-    return try_allocate_pseudoip(mutable_domain, real_ip, port, now);  
+    // Pool is full, clean up expired data and try again
+    cleanup_expired_pseudoip();
+    now = std::chrono::steady_clock::now();
+    return try_allocate_pseudoip(mutable_domain, real_ip, port, now);
 }
 
-// 查询伪地址对应的域名、真实IP和端口
+// Query the domain, real IP, and port corresponding to the pseudo address
 bool query_by_pseudoip(uint32_t pseudoip, std::string& domain, uint32_t& real_ip, uint16_t& port) {
     std::lock_guard<std::mutex> lock(pseudoip_mutex);
 
@@ -107,7 +107,7 @@ bool query_by_pseudoip(uint32_t pseudoip, std::string& domain, uint32_t& real_ip
     return false;
 }
 
-// 查询域名、真实IP和端口对应的伪地址（未过期），查不到返回0
+// Query the pseudo address corresponding to domain, real IP, and port (not expired), return 0 if not found
 uint32_t query_pseudoip_by_domain(const std::string& domain, uint32_t real_ip, uint16_t port) {
     std::lock_guard<std::mutex> lock(pseudoip_mutex);
     
@@ -124,7 +124,7 @@ uint32_t query_pseudoip_by_domain(const std::string& domain, uint32_t real_ip, u
     return 0;
 }
 
-// 清理所有过期的分配记录
+// Clean up all expired allocation records
 void cleanup_expired_pseudoip() {
     std::lock_guard<std::mutex> lock(pseudoip_mutex);
     
@@ -146,7 +146,7 @@ void cleanup_expired_pseudoip() {
 static std::atomic<bool> cleanup_thread_running{ false };
 static std::thread cleanup_thread;
 
-// 定时任务线程函数
+// Periodic task thread function
 static void cleanup_expired_pseudoip_periodic() {
     using namespace std::chrono_literals;
     while (cleanup_thread_running) {
@@ -155,7 +155,7 @@ static void cleanup_expired_pseudoip_periodic() {
     }
 }
 
-// 启动定时清理线程
+// Start periodic cleanup thread
 void start_pseudoip_cleanup_thread() {
     if (!cleanup_thread_running) {
         cleanup_thread_running = true;
@@ -163,7 +163,7 @@ void start_pseudoip_cleanup_thread() {
     }
 }
 
-// 停止定时清理线程（可选，程序退出时调用）
+// Stop periodic cleanup thread (optional, call when program exits)
 void stop_pseudoip_cleanup_thread() {
     cleanup_thread_running = false;
     if (cleanup_thread.joinable()) {
