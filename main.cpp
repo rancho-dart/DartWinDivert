@@ -26,6 +26,7 @@
 
 const UINT DEFAULT_MTU = 1500;
 
+
 // Read PMTU from registry, default to 1500 if not found or error
 UINT ReadPMTUFromRegistry() {
     HKEY hKey;
@@ -35,7 +36,7 @@ UINT ReadPMTUFromRegistry() {
 
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\DartWinDivert", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
         if (RegQueryValueExA(hKey, "PMTU", NULL, &dwType, (LPBYTE)&mtu, &dwSize) != ERROR_SUCCESS || dwType != REG_DWORD) {
-            mtu = DEFAULT_MTU;
+			mtu = DEFAULT_MTU;
         }
         RegCloseKey(hKey);
     }
@@ -360,13 +361,18 @@ static std::string get_resolvable_domain() {
 			int ret = getaddrinfo(new_domain.c_str(), nullptr, &hints, &res);
 			if (ret == 0 && res != nullptr) {
 				freeaddrinfo(res);
+				// make sure fqdn ends with '.'
+				if (fqdn.back() != '.') fqdn += '.';
+				
 				g_resolvable_domain = fqdn; // Use the original FQDN found by PTR query
+
 				return g_resolvable_domain;
 			}
 		}
 		// Otherwise fallthrough to get_public_ip
 	}
-	g_resolvable_domain = get_public_ip();
+	//g_resolvable_domain = get_public_ip();
+	g_resolvable_domain += "[--------]"; // Placeholder to avoid empty domain, will be replaced by the recipient
 	return g_resolvable_domain;
 }
 
@@ -512,19 +518,33 @@ static void handle_inbound_dart(char* packet, UINT& packetLen, WINDIVERT_ADDRESS
 		return;
 	}
 
-	// 2. Check DART header length
+	// 2. Check DART packet integrity
+	// Because now we are using a test udp port, sometimes non-DART packets may use this port and be passed here. we do a little simple check here.
+	// If it is not DART packet, just return. 
 	if (dart_packet_len < sizeof(DartHeader)) {
-		printf("DART header too short\n");
+		//printf("DART header too short\n");
 		return;
 	}
+
 	DartHeader* dart = (DartHeader*)dart_packet_data;
-	UINT8* dart_payload = dart_packet_data + sizeof(DartHeader);
+	if (dart->version != 1) {
+		//printf("Unsupported DART version: %d\n", dart->version);
+		return;
+	}
+
+	if (dart->protocol != 6 && dart->protocol != 17 && dart->protocol != 1) { 
+		//printf("Only TCP/UDP/ICMP supported.\n");
+		return;
+	}
+	
+	uint16_t dart_header_len = DartHeaderLength(dart); // Remember the total header length, we will need it later while calculating desired MSS
+	if (dart_packet_len < dart_header_len){
+		//printf("DART address fields too short\n"); 
+		return;
+	}
+	//UINT8* dart_payload = dart_packet_data + sizeof(DartHeader);
 
 	// 3. Parse variable-length address fields
-	if (dart_packet_len < sizeof(DartHeader) + dart->dst_addr_len + dart->src_addr_len) {
-		printf("DART address fields too short\n");
-		return;
-	}
 	const char* dst_addr = (const char*)(dart_packet_data + sizeof(DartHeader));
 	const char* src_addr = dst_addr + dart->dst_addr_len;
 	// DART payload start
@@ -569,10 +589,45 @@ static void handle_inbound_dart(char* packet, UINT& packetLen, WINDIVERT_ADDRESS
 	// Update packet length, for main loop to send
 	packetLen = (UINT)new_packet_len;
 
-	// Check packet, if TCP or UDP, calculate its checksum
-	//PWINDIVERT_TCPHDR TcpHdr;
-	//PWINDIVERT_UDPHDR UdpHer;
-	//PWINDIVERT_ICMPHDR IcmpHdr;
+
+    // 检查是否为TCP SYN报文，并调整MSS
+	if (ip_header->Protocol == 6) { // TCP协议号为6
+		PWINDIVERT_TCPHDR tcp_header = NULL;
+		UINT8* tcp_payload = NULL;
+		UINT tcp_payload_len = 0;
+		bool parsed = WinDivertHelperParsePacket(packet, packetLen, &ip_header, NULL, NULL, NULL, NULL, &tcp_header, NULL, (PVOID*)&tcp_payload, &tcp_payload_len, NULL, NULL);
+		if (parsed && tcp_header && tcp_header->Syn) {
+			// TCP头长度（单位：字节）
+			uint16_t tcp_hdr_len = tcp_header->HdrLength * 4;
+			uint8_t* options = (uint8_t*)tcp_header + sizeof(WINDIVERT_TCPHDR);
+			size_t options_len = tcp_hdr_len > sizeof(WINDIVERT_TCPHDR) ? (tcp_hdr_len - sizeof(WINDIVERT_TCPHDR)) : 0;
+
+			// 扫描TCP选项，查找MSS（kind=2, len=4）
+			size_t i = 0;
+			while (i + 3 < options_len) {
+				uint8_t kind = options[i];
+				if (kind == 0) break; // 选项结束
+				if (kind == 1) { i++; continue; } // NOP
+				uint8_t len = options[i + 1];
+				if (len < 2 || i + len > options_len) break;
+				if (kind == 2 && len == 4) {
+					// MSS选项
+					uint16_t mss_val = (options[i + 2] << 8) | options[i + 3];
+					// 本地MSS = g_MTU - IP头 - TCP头 -UDP头(8字节) - DART头
+					uint16_t local_mss = (uint16_t)(g_MTU - sizeof(WINDIVERT_IPHDR) - tcp_hdr_len - 8 - dart_header_len);
+					if (mss_val > local_mss) {
+						options[i + 2] = (local_mss >> 8) & 0xFF;
+						options[i + 3] = local_mss & 0xFF;
+						printf("TCP SYN: MSS %u -> %u\n", mss_val, local_mss);
+						WinDivertHelperCalcChecksums(packet, packetLen, NULL, 0);
+					}
+					break;
+				}
+				i += len;
+			}
+		}
+	}
+
 
 	WinDivertHelperCalcChecksums(packet, packetLen, NULL, 0); // Calculate checksum (automatically calculates IP, TCP/UDP/ICMP header checksums)
 
@@ -591,7 +646,7 @@ static void handle_inbound_dart(char* packet, UINT& packetLen, WINDIVERT_ADDRESS
 
 // Handle outbound DHCP packet
 static void handle_outbound_dhcp(char* packet, UINT& packetLen, WINDIVERT_ADDRESS* addr, PWINDIVERT_IPHDR ip_header, PWINDIVERT_UDPHDR udp_header, UINT8* udp_payload = NULL, UINT udp_payload_len = 0) {
-	printf("[OUTBOUND][DHCP] Sent DHCP packet (%d bytes)\n", packetLen);
+	//printf("[OUTBOUND][DHCP] DHCP packet captured (%d bytes)\n", packetLen);
 
 	// 1. Parse IP and UDP headers, locate DHCP data
 	if (!ip_header || !udp_header || !udp_payload) {
@@ -679,7 +734,7 @@ static void handle_outbound_dhcp(char* packet, UINT& packetLen, WINDIVERT_ADDRES
 	if (ip_header) ip_header->Length = htons((USHORT)(packetLen));
 	if (udp_header) udp_header->Length = htons((USHORT)(packetLen - sizeof(WINDIVERT_IPHDR)));
 
-	printf("DHCP Option 224 (Dart:v1) added.\n");
+	printf("DHCP Option 224 (Dart:v1) appended to DHCP REQUEST.\n");
 }
 
 static void handle_exceed_mtu_packets(const char* packet, const WINDIVERT_IPHDR* ip_header, uint16_t suggested_mut, const WINDIVERT_ADDRESS* addr) {
@@ -749,10 +804,10 @@ static void handle_outbound_to_pseudo_addr(char* packet, UINT& packetLen, WINDIV
 	uint32_t pseudo_ip = ntohl(ip_header->DstAddr);
 
 	// 1. Find domain and real IP corresponding to pseudo address
-	std::string domain;
+	std::string dst_fqdn;
 	uint16_t udpPort = 0;
 	uint32_t real_ip = 0;
-	if (!query_by_pseudoip(pseudo_ip, domain, real_ip, udpPort)) {
+	if (!query_by_pseudoip(pseudo_ip, dst_fqdn, real_ip, udpPort)) {
 		printf("Pseudo IP not found in mapping table\n");
 		return;
 	}
@@ -764,7 +819,7 @@ static void handle_outbound_to_pseudo_addr(char* packet, UINT& packetLen, WINDIV
 	DartHeader dart_hdr;
 	dart_hdr.version = 1;
 	dart_hdr.protocol = ip_header->Protocol;
-	dart_hdr.dst_addr_len = (uint8_t)domain.size();
+	dart_hdr.dst_addr_len = (uint8_t)dst_fqdn.size();
 	dart_hdr.src_addr_len = (uint8_t)local_fqdn.size();
 
 	// 4. Shink the TCP MSS option if needed
@@ -777,7 +832,7 @@ static void handle_outbound_to_pseudo_addr(char* packet, UINT& packetLen, WINDIV
 
 		// Scan TCP options for MSS (kind=2, len=4)
 		size_t i = 0;
-		while (i + 1 < options_len) {
+		while (i + 3 < options_len) {
 			uint8_t kind = options[i];
 			if (kind == 0) break; // End of options
 			if (kind == 1) { i++; continue; } // NOP
@@ -833,16 +888,16 @@ static void handle_outbound_to_pseudo_addr(char* packet, UINT& packetLen, WINDIV
 	udp_header_before_dart->Checksum = checksum((uint8_t*)packet, packetLen);
 
 	// 9. Construct DART header and addresses
-	DartHeader* dart_header_ptr = (DartHeader*)(packet + ip_header_len + udp_header_len);
+	DartHeader* dart_header_ptr = (DartHeader*)(udp_header_before_dart + 1);
 	memcpy(dart_header_ptr, &dart_hdr, sizeof(DartHeader));
 
-	char* dst_fqdn = (char*)(dart_header_ptr + 1);
+	char* dst_fqdn_ptr = (char*)(dart_header_ptr + 1);
 	if (dart_hdr.dst_addr_len > 0) {
-		memcpy(dst_fqdn, domain.data(), dart_hdr.dst_addr_len);
+		memcpy(dst_fqdn_ptr, dst_fqdn.data(), dart_hdr.dst_addr_len);
 	}
-	char* src_fqdn = dst_fqdn + dart_hdr.dst_addr_len;
+	char* src_fqdn_ptr = dst_fqdn_ptr + dart_hdr.dst_addr_len;
 	if (dart_hdr.src_addr_len > 0) {
-		memcpy(dart_header_ptr, local_fqdn.data(), dart_hdr.src_addr_len);
+		memcpy(src_fqdn_ptr, local_fqdn.data(), dart_hdr.src_addr_len);
 	}
 
 
@@ -862,26 +917,37 @@ static void handle_outbound_to_pseudo_addr(char* packet, UINT& packetLen, WINDIV
 
 
 static void divert_loop() {
-	HANDLE handle = WinDivertOpen(
-		// Filter inbound DNS, inbound UDP 55847, outbound UDP 67/68 (DHCP), outbound 198.18.0.0/15
-		"(inbound and udp.DstPort == 55847) or "										// Inbound DART, need NAT: DART->4 conversion
-		"(outbound and ip.DstAddr >= 198.18.0.0 and ip.DstAddr <= 198.19.255.255) or "	// Outbound to pseudo address, need NAT: 4->DART conversion
-		"(inbound and udp.SrcPort == 53) or "											// Inbound DNS, perform pseudo address replacement
-		"(outbound and udp.SrcPort == 68 and udp.DstPort == 67)",						// Outbound DHCP, need to add OPTION 224
-		WINDIVERT_LAYER_NETWORK, 0, 0);
+	HANDLE handle =
+		WinDivertOpen(
+			// Filter inbound DNS, inbound UDP 55847, outbound UDP 67/68 (DHCP), outbound 198.18.0.0/15
+			"(inbound and udp.DstPort == 55847) or "										// Inbound DART, need NAT: DART->4 conversion
+			"(outbound and ip.DstAddr >= 198.18.0.0 and ip.DstAddr <= 198.19.255.255) or "	// Outbound to pseudo address, need NAT: 4->DART conversion
+			"(inbound and udp.SrcPort == 53) or "											// Inbound DNS, perform pseudo address replacement
+			"(outbound and udp.SrcPort == 68 and udp.DstPort == 67)",						// Outbound DHCP, need to add OPTION 224
+			WINDIVERT_LAYER_NETWORK, 0, 0);
 
 	if (handle == INVALID_HANDLE_VALUE) {
-		printf("WinDivertOpen failed: %d\n", GetLastError());
-		// Typical errors:
-		//    5 (ERROR_ACCESS_DENIED)→ No administrator privileges. - Run as administrator.
-		//	 87 (ERROR_INVALID_PARAMETER)→ Filter rule syntax error. - Check the filter string.
-		//	577 (ERROR_INVALID_IMAGE_HASH)→ Driver unsigned or blocked by security policy. - Check driver signature.
+		int error = GetLastError();
+		switch (error) {
+		case ERROR_ACCESS_DENIED:
+			printf("WinDivertOpen failed: Access denied. Please run as administrator.\n");
+			break;
+		case ERROR_INVALID_PARAMETER:
+			printf("WinDivertOpen failed: Invalid parameter. Please check the filter syntax.\n");
+			break;
+		case ERROR_INVALID_IMAGE_HASH:
+			printf("WinDivertOpen failed: Driver unsigned or blocked by security policy. Please check driver signature.\n");
+			break;
+		default:
+			printf("WinDivertOpen failed with error code: %d\n", error);
+			break;
+		}
 
-        WSACleanup();
+		WSACleanup();
 		return;
 	}
-	
-	printf("WinDivert open successful!\n");
+
+	printf("WinDivert opened successfully!\n");
 
 	// Set receive timeout (milliseconds)
 	UINT64 timeout = 1000; // 1 second
@@ -952,7 +1018,6 @@ static void divert_loop() {
 	free(packet);
 
 	WinDivertClose(handle);
-
 }
 
 int AppMain() {
