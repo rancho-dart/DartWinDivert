@@ -1,3 +1,6 @@
+// Copyright (c) 2025 rancho.dart@qq.com
+// Licensed under the MIT License. See LICENSE file for details.
+
 #include "include/DartHeader.h"
 
 // Calculate the total length of DartHeader (including variable-length address fields)
