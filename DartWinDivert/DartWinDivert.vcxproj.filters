@@ -36,4 +36,16 @@
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
+  <ItemGroup>
+    <Text Include="LICENSE.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="WinDivert.dll" />
+    <None Include="WinDivert64.sys" />
+    <None Include=".gitignore" />
+    <None Include=".gitattributes" />
+  </ItemGroup>
+  <ItemGroup>
+    <Library Include="WinDivert.lib" />
+  </ItemGroup>
 </Project>
