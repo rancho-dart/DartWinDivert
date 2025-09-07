@@ -59,7 +59,10 @@ DART WinDivert通过截获DHCP REQUEST数据包来实现这个功能。
     
     如果是执行安装包安装，那么DartWinDivert会自动注册为系统服务。
 
-DartWinDivert正常工作时，解析一个支持DART协议的主机域名（譬如www.dart-proto.cn），会得到198.19.0.0/16网段内的IP地址。
+DartWinDivert正常工作时，解析一个支持DART协议的主机域名（譬如www.dart-proto.cn），会得到198.19.0.0/16网段内的IP地址。如果没有，尝试刷新一下DNS:
+    ```
+    ipconfig /flushdns
+    ```
 
 
 ## 结语

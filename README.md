@@ -58,6 +58,8 @@ Find the corresponding pseudo address from the pseudo address allocation table, 
    If installed via the installation package, DartWinDivert will automatically register as a system service.
 
 When DartWinDivert works properly, resolving a domain name of a host that supports the DART protocol (e.g., www.dart-proto.cn) will yield an IP address within the 198.19.0.0/16 network segment.
+If not, try refreshing the DNS:
+```ipconfig /flushdns```
 
 ## Conclusion
 You are welcome to try DART WinDivert, and we encourage you to develop better DART protocol support programs.
