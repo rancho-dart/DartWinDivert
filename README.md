@@ -36,7 +36,10 @@ Find the corresponding pseudo address from the pseudo address allocation table, 
 1. Obtain WinDivert
 
    Get the binary package of WinDivert and copy the DLL/LIB/SYS files from it into the DART WinDivert directory.
+
    Download URL: https://reqrypt.org/windivert.html
+ 
+   Note: The current library already includes files for WinDivert version 2.2.2.
 
 1. Compile DART WinDivert
    

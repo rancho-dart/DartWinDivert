@@ -40,6 +40,8 @@ DART WinDivert通过截获DHCP REQUEST数据包来实现这个功能。
     获取WinDivert的二进制包，并复制其中的DLL/LIB/SYS文件到DART WinDivert的目录下。
     
     下载地址：https://reqrypt.org/windivert.html
+    
+    注：当前库中已经包含WinDivert 2.2.2版本的文件。
 
 2. 编译DART WinDivert
     
