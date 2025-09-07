@@ -99,10 +99,10 @@ static int renew_DHCP_ifce() {
 					IP_ADAPTER_INDEX_MAP* map = &pIfInfo->Adapter[i];
 					DWORD res = IpRenewAddress(map);
 					if (res == NO_ERROR) {
-						printf("  -> IP renewed through DHCP successfully.\n");
+						printf("  -> DHCP renew request sent successfully.\n");
 					}
 					else {
-						printf("  -> IP renew failed: %lu (if is not under a DART gateway and network interface has valid ip address, you can ignore this message)\n", res);
+						printf("  -> IpRenewAddress failed: %lu\n", res);
 					}
 					break;
 				}
@@ -113,7 +113,6 @@ static int renew_DHCP_ifce() {
 
 	free(pIfInfo);
 	free(pAdInfo);
-
 	return 0;
 }
 
