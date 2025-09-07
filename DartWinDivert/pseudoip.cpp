@@ -1,3 +1,6 @@
+// Copyright (c) 2025 rancho.dart@qq.com
+// Licensed under the MIT License. See LICENSE file for details.
+
 #include <unordered_map>
 #include <string>
 #include <chrono>
