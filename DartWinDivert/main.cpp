@@ -1,3 +1,6 @@
+// Copyright (c) 2025 rancho.dart@qq.com
+// Licensed under the MIT License. See LICENSE file for details.
+
 #define _WIN32_WINNT 0x0600
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -603,30 +606,30 @@ static void handle_inbound_dart(char* packet, UINT& packetLen, WINDIVERT_ADDRESS
 	packetLen = (UINT)new_packet_len;
 
 
-    // ¼ì²éÊÇ·ñÎªTCP SYN±¨ÎÄ£¬²¢µ÷ÕûMSS
-	if (ip_header->Protocol == 6) { // TCPĞ­ÒéºÅÎª6
+    // æ£€æŸ¥æ˜¯å¦ä¸ºTCP SYNæŠ¥æ–‡ï¼Œå¹¶è°ƒæ•´MSS
+	if (ip_header->Protocol == 6) { // TCPåè®®å·ä¸º6
 		PWINDIVERT_TCPHDR tcp_header = NULL;
 		UINT8* tcp_payload = NULL;
 		UINT tcp_payload_len = 0;
 		bool parsed = WinDivertHelperParsePacket(packet, packetLen, &ip_header, NULL, NULL, NULL, NULL, &tcp_header, NULL, (PVOID*)&tcp_payload, &tcp_payload_len, NULL, NULL);
 		if (parsed && tcp_header && tcp_header->Syn) {
-			// TCPÍ·³¤¶È£¨µ¥Î»£º×Ö½Ú£©
+			// TCPå¤´é•¿åº¦ï¼ˆå•ä½ï¼šå­—èŠ‚ï¼‰
 			uint16_t tcp_hdr_len = tcp_header->HdrLength * 4;
 			uint8_t* options = (uint8_t*)tcp_header + sizeof(WINDIVERT_TCPHDR);
 			size_t options_len = tcp_hdr_len > sizeof(WINDIVERT_TCPHDR) ? (tcp_hdr_len - sizeof(WINDIVERT_TCPHDR)) : 0;
 
-			// É¨ÃèTCPÑ¡Ïî£¬²éÕÒMSS£¨kind=2, len=4£©
+			// æ‰«æTCPé€‰é¡¹ï¼ŒæŸ¥æ‰¾MSSï¼ˆkind=2, len=4ï¼‰
 			size_t i = 0;
 			while (i + 3 < options_len) {
 				uint8_t kind = options[i];
-				if (kind == 0) break; // Ñ¡Ïî½áÊø
+				if (kind == 0) break; // é€‰é¡¹ç»“æŸ
 				if (kind == 1) { i++; continue; } // NOP
 				uint8_t len = options[i + 1];
 				if (len < 2 || i + len > options_len) break;
 				if (kind == 2 && len == 4) {
-					// MSSÑ¡Ïî
+					// MSSé€‰é¡¹
 					uint16_t mss_val = (options[i + 2] << 8) | options[i + 3];
-					// ±¾µØMSS = g_MTU - IPÍ· - TCPÍ· -UDPÍ·(8×Ö½Ú) - DARTÍ·
+					// æœ¬åœ°MSS = g_MTU - IPå¤´ - TCPå¤´ -UDPå¤´(8å­—èŠ‚) - DARTå¤´
 					uint16_t local_mss = (uint16_t)(g_MTU - sizeof(WINDIVERT_IPHDR) - tcp_hdr_len - 8 - dart_header_len);
 					if (mss_val > local_mss) {
 						options[i + 2] = (local_mss >> 8) & 0xFF;
