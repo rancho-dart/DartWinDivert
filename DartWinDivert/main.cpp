@@ -695,7 +695,7 @@ static void handle_outbound_dhcp(char* packet, UINT& packetLen, WINDIVERT_ADDRES
 	}
 
 	// 4. Only handle DHCP Discover(1) and Request(3)
-	if (dhcp_type != 1 && dhcp_type != 3) return;
+	if (/*dhcp_type != 1 && */dhcp_type != 3) return;
 
 	// 5. Check if Option 224 already exists
 	opt = options;
@@ -737,18 +737,23 @@ static void handle_outbound_dhcp(char* packet, UINT& packetLen, WINDIVERT_ADDRES
 	size_t before_ff = ff - udp_payload;
 	size_t after_ff = udp_payload_len - before_ff - 1; // payload_len is DHCP payload length
 	size_t new_len = before_ff + 2 + dart_opt_len + 1 + after_ff;
+	size_t padding_len = new_len % 4;
+	if (padding_len != 0) padding_len = 4 - padding_len;
 
 	// Move subsequent data to make room for Option 224
 	memmove(udp_payload + before_ff + 2 + dart_opt_len + 1, udp_payload + before_ff + 1, after_ff);
 	// Insert Option 224 and end
 	memcpy(udp_payload + before_ff, extra, 2 + dart_opt_len + 1);
+	memset(udp_payload + new_len, 0, padding_len);
 
 	// Update packet length
-	packetLen += (2 + dart_opt_len); // Added Option length
+	packetLen += (2 + dart_opt_len + padding_len); // Added Option length
 
 	// Update IP and UDP length fields
 	if (ip_header) ip_header->Length = htons((USHORT)(packetLen));
 	if (udp_header) udp_header->Length = htons((USHORT)(packetLen - sizeof(WINDIVERT_IPHDR)));
+
+	WinDivertHelperCalcChecksums(packet, packetLen, NULL, 0);
 
 	printf("DHCP Option 224 (Dart:v1) appended to DHCP REQUEST.\n");
 }
@@ -940,7 +945,8 @@ static void divert_loop() {
 			"(inbound and udp.DstPort == 55847) or "										// Inbound DART, need NAT: DART->4 conversion
 			"(outbound and ip.DstAddr >= 198.18.0.0 and ip.DstAddr <= 198.19.255.255) or "	// Outbound to pseudo address, need NAT: 4->DART conversion
 			"(inbound and udp.SrcPort == 53) or "											// Inbound DNS, perform pseudo address replacement
-			"(outbound and udp.SrcPort == 68 and udp.DstPort == 67) or"						// Outbound DHCP, need to add OPTION 224
+			"(outbound and udp.SrcPort == 68 and udp.DstPort == 67) or"					// Outbound DHCP, need to add OPTION 224. Only when we are under DART gateway, and want it forward DART packets to us we can enable this
+																							// Some DHCP servers can not handle unknown options, so we disable it by default
 			"(inbound and icmp and icmp.Type == 3 and icmp.Code == 4)",						// ICMP 'Packet Too Big' messages
 			WINDIVERT_LAYER_NETWORK, 0, 0);
 
@@ -1077,7 +1083,7 @@ int AppMain() {
 	Sleep(1000);
 
 	// Main thread performs DHCP renewal. WinDivert will handle packets in the background, adding Option 224 to tell the DHCP server this is a Dart protocol capable device
-	renew_DHCP_ifce();
+	//renew_DHCP_ifce();
 
 	// Wait for background thread to finish (if needed)
 	divertThread.join();
@@ -1159,9 +1165,12 @@ void WINAPI ServiceMain(DWORD argc, LPTSTR* argv) {
 	start_pseudoip_cleanup_thread();
 
 	std::thread divertThread(divert_loop);
-	
-	Sleep(1000);
-	renew_DHCP_ifce();
+
+	// If we are under a DART gateway, we need to renew DHCP lease to let the DART gateway know we are DART capable
+	// If we are not, the DHCP Server is expected to ignore the Option 224 we added to DHCP REQUEST packet, so it won't do any harm.
+	// 
+	//Sleep(1000);
+	//renew_DHCP_ifce();
 
 	g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
 	SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
