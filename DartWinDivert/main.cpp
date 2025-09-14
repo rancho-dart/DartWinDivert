@@ -21,7 +21,6 @@
 #include "include/windivert.h"
 #include <winreg.h>
 
-
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "dnsapi.lib")
@@ -32,6 +31,27 @@
 #define REGISTRY_MTU_VALUE_NAME "PMTU"
 
 const UINT DEFAULT_MTU = 1500;
+
+BOOL __stdcall DnsFlushResolverCache()
+{
+	BOOL bRet = FALSE;
+
+	typedef BOOL(WINAPI* PfuncDnsFlushResolverCache)(VOID);
+    HMODULE hDnsModule = LoadLibraryA("dnsapi.dll");
+	if (hDnsModule != NULL)
+	{
+        PfuncDnsFlushResolverCache pFlushFun = reinterpret_cast<PfuncDnsFlushResolverCache>(GetProcAddress(hDnsModule, "DnsFlushResolverCache"));
+		if (pFlushFun != NULL)
+		{
+			pFlushFun();
+			bRet = TRUE;
+		}
+
+		FreeLibrary(hDnsModule);
+	}
+
+	return bRet;
+}
 
 
 // Read PMTU from registry, default to 1500 if not found or error
@@ -100,13 +120,23 @@ static int renew_DHCP_ifce() {
 			for (int i = 0; i < pIfInfo->NumAdapters; ++i) {
 				if (pIfInfo->Adapter[i].Index == pAdapter->Index) {
 					IP_ADAPTER_INDEX_MAP* map = &pIfInfo->Adapter[i];
-					DWORD res = IpRenewAddress(map);
+
+					DWORD res = IpReleaseAddress(map);
 					if (res == NO_ERROR) {
-						printf("  -> IP renewed through DHCP successfully.\n");
+						printf("  -> IP released through DHCP successfully.\n");
+
+						DWORD res = IpRenewAddress(map);
+						if (res == NO_ERROR) {
+							printf("  -> IP renewed through DHCP successfully.\n");
+						}
+						else {
+							printf("  -> IP renew failed: %lu \n", res);
+						}
 					}
 					else {
-						printf("  -> IP renew failed: %lu (if is not under a DART gateway and network interface has valid ip address, you can ignore this message)\n", res);
+						printf("  -> IP release failed: %lu\n", res);
 					}
+
 					break;
 				}
 			}
@@ -1058,6 +1088,19 @@ static void divert_loop() {
 	WinDivertClose(handle);
 }
 
+static int flush_DNS_cache() {
+	BOOL success = DnsFlushResolverCache();
+	if (success) {
+		printf("DNS cache flushed successfully.\n");
+		return 0;
+	}
+	else {
+		printf("Failed to flush DNS cache. Error: %lu\n", GetLastError());
+		return -1;
+	}
+}
+
+
 int AppMain() {
 
 	// Initialize Winsock
@@ -1083,7 +1126,8 @@ int AppMain() {
 	Sleep(1000);
 
 	// Main thread performs DHCP renewal. WinDivert will handle packets in the background, adding Option 224 to tell the DHCP server this is a Dart protocol capable device
-	//renew_DHCP_ifce();
+	renew_DHCP_ifce();
+	flush_DNS_cache();
 
 	// Wait for background thread to finish (if needed)
 	divertThread.join();
@@ -1168,9 +1212,9 @@ void WINAPI ServiceMain(DWORD argc, LPTSTR* argv) {
 
 	// If we are under a DART gateway, we need to renew DHCP lease to let the DART gateway know we are DART capable
 	// If we are not, the DHCP Server is expected to ignore the Option 224 we added to DHCP REQUEST packet, so it won't do any harm.
-	// 
-	//Sleep(1000);
-	//renew_DHCP_ifce();
+	Sleep(1000);
+	renew_DHCP_ifce();
+	flush_DNS_cache();
 
 	g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
 	SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
